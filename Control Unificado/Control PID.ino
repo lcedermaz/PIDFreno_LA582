@@ -59,7 +59,398 @@ byte verticalLine[8] = {
   B00100,
   B00100,
   B00100,
-  B00100,
+  B00100,//--------libr Celda
+#include <Wire.h>
+#include <hd44780.h>                       
+#include <hd44780ioClass/hd44780_I2Cexp.h>
+#include <SimpleModbusSlave.h>
+#include <LiquidCrystal_I2C.h>
+
+//#include <TimerOne.h>
+//hd44780_I2Cexp lcd;
+//const int LCD_COLS = 16;
+//const int LCD_ROWS = 2;
+
+//--------libr Tacometro
+
+#include  <TimerOne.h> 
+//#include <eRCaGuy_Timer2_Counter.h>
+
+//-----------Config lcd
+
+LiquidCrystal_I2C lcd(0x27,20,4);
+
+/*********Funciones************/
+
+void promedio_celda ();
+void Monitor_LCD();
+void envio_datos();
+void tacometro();
+
+/**************Seteo de Tiempos*************/ 
+
+//------------------------------Promedio Celda
+
+unsigned long previousMillis = 0;
+const long interval = 500 ;
+
+//------------------------------Monitor Datos 
+
+unsigned long previousMillis_1 = 0;
+const long interval_1 = 1000 ;
+
+//------------------------------Envio de Datos 
+
+unsigned long previousMillis_2 = 0;
+const long interval_2 = 1000 ;
+
+
+//------------------------------tacometro 
+
+unsigned long previousMillis_3 = 0;
+const long interval_3 = 1000 ;
+
+//**************************************//
+
+
+//-----------CELDA-----------//
+
+#include "HX711.h"
+HX711 scale(A1, A0);  // Módulo Celda
+double peso_inst = 0; // Variable Peso Instantáneo
+
+
+// Promedio para Suavizado
+const int numReadings = 20;        // tamaño del arreglo
+double readings[numReadings];      // lectura de la entrada analógica
+int index = 0;                     // el índice de la lectura actual
+double average = 0;                // la media
+double total = 0;
+int thisReading = 0;
+unsigned int taux = 0;
+
+//Enumeramos los registros a utilizar (Celda)
+              enum   
+              {     
+                ADC_VAL,
+                ADC_VAL_1,     
+                PWM_VAL,            
+                HOLDING_REGS_SIZE 
+              };
+
+unsigned int holdingRegs[HOLDING_REGS_SIZE]; 
+
+//Enumeramos los registros a utilizar (Tacometro)
+ /*              
+              enum   
+             {     
+                ADC_VAL_1,     
+                PWM_VAL,        
+                HOLDING_REGS_SIZE
+              };
+
+//unsigned int holdingRegs[HOLDING_REGS_SIZE_1]; 
+*/
+
+//-----------TACOMETRO-----------//
+
+volatile boolean output_data = false; //the main loop will try to output data each time a new pulse comes in, which is when this gets set true
+volatile unsigned long t_start = 0; //units of 0.5us; the input signal high pulse time
+volatile unsigned long t_end = 0;
+volatile unsigned long t_aux = 0; unsigned long t_aux2 = 0;
+float rpm = 0; float rpmv = 0;    long t_while = 0;
+volatile unsigned int i=0;
+
+void setup() {
+  
+  //-------- Config serial
+     modbus_configure(&Serial, 38400, SERIAL_8N2, 2, 2, HOLDING_REGS_SIZE, holdingRegs);
+     modbus_update_comms(38400, SERIAL_8N2, 2);
+  
+int status;
+  
+  //status = lcd.begin(LCD_COLS, LCD_ROWS);
+  
+  if(status) // non zero status means it was unsuccesful
+                          {
+    status = -status; 
+    hd44780::fatalError(status); // does not return
+  }
+
+//-------- Config E/S
+
+  pinMode(7, INPUT); // Boton de TARA
+  attachInterrupt(digitalPinToInterrupt(2), ISRe, RISING); // Entrada de interrupciones
+ 
+//-------- Config celda de carga
+
+  scale.set_scale(60419);  // Valor de calibración de la celda de carga
+  scale.tare(); // Reset scale a 0 (tara)  
+
+//----Mensaje de Bienvenida----//
+  
+          lcd.clear();
+          lcd.init();
+          lcd.backlight();// Indicamos medidas de LC
+          lcd.begin(20, 4);
+                  
+          
+          lcd.setCursor(6, 0);
+          lcd.print("FRENO PID");  
+          lcd.setCursor(4, 1);
+          lcd.print("LA 582 LAMyEN"); 
+          
+          lcd.setCursor(4, 3);
+          lcd.print(" Cargando.");
+          delay(1000);
+          lcd.setCursor(4, 3);
+          lcd.print(" Cargando..");
+          delay(1000);
+          lcd.setCursor(4, 3);
+          lcd.print(" Cargando...");
+          delay(1000);
+          lcd.clear();
+         
+          lcd.setCursor(6, 0);
+          lcd.print("FRENO PID");  
+          lcd.setCursor(4, 1);
+          lcd.print("LA 582 LAMyEN"); 
+          
+          lcd.setCursor(4, 3);
+          lcd.print(" Cargando.");
+          delay(1000);
+          lcd.setCursor(4, 3);
+          lcd.print(" Cargando..");
+          delay(1000);
+          lcd.setCursor(4, 3);
+          lcd.print(" Cargando...");
+          delay(1000);
+          lcd.clear();
+
+//-------Monitor Tacometro
+
+          lcd.setCursor(0, 1);
+          lcd.print("             "); 
+          lcd.setCursor(0, 1);
+          lcd.print("Vprom: ");
+          lcd.setCursor(13, 1);
+          lcd.print(" rpm");
+
+//-------Monitor Torque
+
+          lcd.setCursor(0, 2);
+          lcd.print("             "); 
+          lcd.setCursor(0, 2);
+          lcd.print("Torque:");
+          lcd.setCursor(13, 2);
+          lcd.print(" kgm/f");
+
+}
+
+void loop() {
+
+//------------------------------Funcion 1 (Promedio Celda)
+  
+  unsigned long currentMillis = millis();
+
+  if (currentMillis - previousMillis >= interval) {
+    previousMillis = currentMillis;
+    promedio_celda ();
+  }
+
+
+//------------------------------Funcion 2 (Celda - Datos en monitor LCD)
+  
+  unsigned long currentMillis_1 = millis();
+
+  if (currentMillis_1 - previousMillis_1 >= interval_1) {
+    previousMillis_1 = currentMillis_1;
+    Monitor_LCD();
+  }
+
+
+//------------------------------Funcion 3 (Envío de Datos)
+  
+  unsigned long currentMillis_2 = millis();
+
+  if (currentMillis_2 - previousMillis_2 >= interval_2) {
+    previousMillis_2 = currentMillis_2;
+    envio_datos();
+  }
+
+//------------------------------Funcion 4 (tacometro)
+  
+  unsigned long currentMillis_3 = millis();
+
+  if (currentMillis_3 - previousMillis_3 >= interval_3) {
+    previousMillis_3 = currentMillis_3;
+    tacometro();
+  }
+
+
+}
+
+// PARA QUE SIRVE ESTE?
+
+void myHandler(){
+  }
+
+
+void promedio_celda(){
+
+    if (digitalRead(7) == HIGH) // Se inicia apretando el boton de TARA
+    {
+     scale.tare(); // Tara
+     average = 0;
+     total = 0;
+     peso_inst = 0;
+            while (thisReading <= numReadings){
+            readings[thisReading] = 0;
+            thisReading++;
+     }
+     thisReading = 0; 
+    }
+
+     //if(millis()-taux>100){
+     //   taux=millis();
+    total= total - readings[index];        
+    peso_inst = (scale.get_units(3));
+    readings[index] = peso_inst;
+    total= total + readings[index];      
+    index = index + 1;                    
+
+  // si se llego al final de arreglo (al último elemento)
+ /* if (index >= numReadings) {  
+    lcd.setCursor(7,1);
+    lcd.print("       ");           
+
+    index = 0;  
+      if (average > -0.0009 && average < 0.0009)
+  {
+    lcd.setCursor(7,1);
+    lcd.print("0.000");
+  }
+    else
+    {
+    lcd.setCursor(7,1);
+    lcd.print(average,3);
+    } 
+    lcd.setCursor(14,1);
+    lcd.print("kg");  
+    }                       
+      
+    // calcula la media
+
+ 
+ average = total / numReadings;     
+ if (average > -0.0009 && average < 0.0009)
+  {
+    holdingRegs[ADC_VAL] = 0;
+  }  
+else
+    {
+    holdingRegs[ADC_VAL] = average*1000.0;
+    } 
+  
+  // Variable Promedio en Display
+   if(millis()-taux>300){modbus_update();}
+ */
+  }
+
+  void Monitor_LCD(){
+
+    //------------------------------Monitor Fuerza    
+              
+          //lcd.setCursor(1,0);
+          //lcd.print("CELDA DE CARGA");
+          lcd.setCursor(0,0); // Se desplazó una línea hacia arriba
+          lcd.print("Fuerza: ");
+          lcd.setCursor(8,0);
+          lcd.setCursor(14,0);
+          lcd.print("kg");
+    
+    if (index >= numReadings) {  
+    lcd.setCursor(7,0);
+    lcd.print("       ");           
+
+    index = 0;  
+      if (average > -0.0009 && average < 0.0009)
+            {
+              lcd.setCursor(7,0);
+              lcd.print("0.000");
+            }
+                      else
+                      {
+                      lcd.setCursor(7,0);
+                      lcd.print(average,3);// Cantidad de decimales del valor promedio
+                      } 
+    lcd.setCursor(14,0);
+    lcd.print("kg");  
+    }   
+  }
+
+
+void tacometro(){
+
+     if(micros()- t_aux2 > 2500000){ rpm=0; lcd.setCursor(6, 1);
+     lcd.print("       "); 
+     lcd.setCursor(6, 1);lcd.print(rpm); holdingRegs[ADC_VAL_1] = 0;}
+     modbus_update();   
+     if (output_data==true)
+  { t_aux2 = micros();
+    rpm = (1200000000.0/(t_end-t_start))/1.000344;
+    holdingRegs[ADC_VAL_1] = rpm*10;
+       
+    if(rpm!=rpmv){
+     rpmv=rpm;    
+     lcd.setCursor(7, 1);
+     lcd.print("       "); 
+     lcd.setCursor(7, 1); 
+     //lcd.print((rpm/2)/1.00042);
+     lcd.print(rpm);
+     lcd.setCursor(13, 1);
+     lcd.print(" rpm");}
+  /*   
+     //----------Torque------
+     lcd.setCursor(6, 2);
+     lcd.print("       "); 
+     lcd.setCursor(6, 2); 
+     lcd.print(rpm);
+     lcd.setCursor(13, 2);
+     lcd.print("rpm");}
+*/
+     output_data = false;
+      }  
+  } 
+
+
+void ISRe()   {
+              t_aux = micros();
+          
+              if(output_data==false){
+          
+              if(i==0){t_start = t_aux; }//0.5uS 
+              i++;
+              if(i==21){ t_end = t_aux; output_data = true; i=0; }
+                        }
+              }
+
+
+void envio_datos() {
+             average = total / numReadings;     
+             if (average > -0.0009 && average < 0.0009)
+              {
+                holdingRegs[ADC_VAL] = 0;
+              }  
+            else
+              {
+              holdingRegs[ADC_VAL] = average*1000.0;
+              } 
+  
+        // Variable Promedio en Display
+         if(millis()-taux>300){modbus_update();}
+        
+  }
   B00100,
   B00100
 };  
